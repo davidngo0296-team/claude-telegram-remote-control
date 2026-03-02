@@ -19,6 +19,70 @@ TELEGRAM_ENV_MARKER = "CLAUDE_TELEGRAM_INITIATED"
 MAX_LEN = 3800
 EDIT_INTERVAL = 0.8
 
+TOOL_ICONS = {
+    "Bash": "🔧",
+    "Read": "📖",
+    "Write": "✏️",
+    "Edit": "✏️",
+    "NotebookEdit": "✏️",
+}
+RESULT_LINES = 5
+
+
+def _format_input_snippet(name: str, input_dict: dict) -> str:
+    """Extract key input field for display, truncated to 60 chars."""
+    if name == "Bash":
+        raw = input_dict.get("command", "")
+    elif name in ("Read", "Write", "Edit", "NotebookEdit"):
+        raw = input_dict.get("file_path", "")
+    else:
+        raw = json.dumps(input_dict)
+    if len(raw) > 60:
+        return raw[:57] + "..."
+    return raw
+
+
+def _truncate_result(content) -> str:
+    """Return first RESULT_LINES lines of tool result content."""
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        text = "\n".join(
+            item.get("text", "") if isinstance(item, dict) else str(item)
+            for item in content
+        )
+    else:
+        text = str(content)
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if len(lines) <= RESULT_LINES:
+        return text
+    return "\n".join(lines[:RESULT_LINES]) + "\n…"
+
+
+def _render_activity(tool_calls: list) -> str:
+    """Render live activity log for the Telegram message."""
+    parts = ["⌛ _Working…_\n"]
+    for tc in tool_calls:
+        icon = TOOL_ICONS.get(tc["name"], "🔩")
+        snippet = tc["snippet"]
+        if tc["done"]:
+            result = tc.get("result_lines", "")
+            if result:
+                parts.append(
+                    f"{icon} *{tc['name']}:* `{snippet}`\n```\n{result}\n```✓\n"
+                )
+            else:
+                parts.append(f"{icon} *{tc['name']}:* `{snippet}` ✓\n")
+        else:
+            parts.append(f"{icon} *{tc['name']}:* `{snippet}` ⏳\n")
+    text = "\n".join(parts)
+    if len(text) > MAX_LEN:
+        return "…" + text[-MAX_LEN:]
+    return text
+
+
 # Add this dir to path so sessions.py can be imported
 sys.path.insert(0, str(Path(__file__).parent))
 import sessions as sess_store
