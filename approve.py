@@ -1,0 +1,369 @@
+"""Handle Claude Code PermissionRequest hook via Telegram.
+
+Sends an inline-button message (Approve / Deny) to Telegram, polls for
+the user's tap, then writes the decision to stdout in the format Claude
+Code expects for PermissionRequest hooks.
+
+Output format (always exit 0 — Claude reads stdout for the decision):
+    {"behavior": "allow"}                          → proceed
+    {"behavior": "deny", "message": "<reason>"}    → block with reason
+
+Usage (set in settings.json under PermissionRequest):
+    python approve.py
+"""
+
+import ctypes
+import ctypes.wintypes
+import json
+import os
+import sys
+import time
+import tempfile
+from urllib.request import Request, urlopen
+
+
+TIMEOUT_SECONDS = 3600  # 1 hour
+MODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mode.txt")
+SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram_sessions.json")
+
+
+def get_session_name(session_id: str) -> str:
+    try:
+        sessions = json.loads(open(SESSIONS_FILE, encoding="utf-8").read())
+        for s in sessions:
+            if s.get("id") == session_id:
+                return s.get("name", "")
+    except Exception:
+        pass
+    return ""
+
+
+def upsert_session(session_id: str, name: str) -> None:
+    try:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            sessions = json.loads(open(SESSIONS_FILE, encoding="utf-8").read())
+        except Exception:
+            sessions = []
+        for s in sessions:
+            if s.get("id") == session_id:
+                s["last_used"] = now
+                break
+        else:
+            sessions.append({"id": session_id, "name": name, "last_used": now})
+        sessions = sorted(sessions, key=lambda s: s.get("last_used", ""), reverse=True)[:10]
+        open(SESSIONS_FILE, "w", encoding="utf-8").write(json.dumps(sessions, indent=2))
+    except Exception:
+        pass
+
+
+def plain_content(tool_name: str, tool_input: dict) -> str:
+    """Return full plain-text content for the popup (no markdown)."""
+    if tool_name == "Bash":
+        return tool_input.get("command", "").strip()
+    if tool_name == "Edit":
+        path = tool_input.get("file_path", "")
+        old = tool_input.get("old_string", "")
+        new = tool_input.get("new_string", "")
+        return f"File: {path}\n\n── Replace ──\n{old}\n\n── With ──\n{new}"
+    if tool_name == "Write":
+        path = tool_input.get("file_path", "")
+        content = tool_input.get("content", "")
+        return f"File: {path}\n\n{content}"
+    if tool_name == "NotebookEdit":
+        path = tool_input.get("notebook_path", "")
+        return f"Notebook: {path}\n\n{json.dumps(tool_input, indent=2)}"
+    return json.dumps(tool_input, indent=2)
+
+
+def show_desktop_popup(tool_name: str, tool_input: dict, cwd: str = "") -> tuple:
+    """Show an approval dialog matching the CLI experience.
+
+    Three options — Allow / Deny / Deny with feedback.
+    Returns (approved: bool, reason: str).
+    Falls back to auto-approve if tkinter is unavailable.
+    """
+    try:
+        import tkinter as tk
+        from tkinter import scrolledtext, simpledialog
+
+        result = {"approved": False, "reason": "Denied via desktop dialog."}
+
+        root = tk.Tk()
+        root.title(f"Claude — {tool_name}")
+        root.attributes("-topmost", True)
+        root.resizable(True, True)
+
+        # Centre on screen at a comfortable size
+        w, h = 720, 520
+        root.update_idletasks()
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+        # ── Header bar ───────────────────────────────────────────────────
+        hdr = tk.Frame(root, bg="#1e1e2e")
+        hdr.pack(fill="x")
+        tk.Label(hdr, text=f"  {tool_name}", font=("Consolas", 12, "bold"),
+                 bg="#1e1e2e", fg="#cdd6f4", anchor="w").pack(side="left", pady=8)
+        if cwd:
+            tk.Label(hdr, text=f"   {cwd}", font=("Consolas", 9),
+                     bg="#1e1e2e", fg="#6c7086", anchor="w").pack(side="left")
+
+        # ── Scrollable content area ──────────────────────────────────────
+        txt = scrolledtext.ScrolledText(
+            root, wrap=tk.WORD, font=("Consolas", 10),
+            bg="#181825", fg="#cdd6f4", relief="flat",
+            padx=12, pady=10, insertbackground="white",
+        )
+        txt.insert("1.0", plain_content(tool_name, tool_input))
+        txt.config(state="disabled")
+        txt.pack(fill="both", expand=True)
+
+        # ── Button bar ───────────────────────────────────────────────────
+        bar = tk.Frame(root, bg="#1e1e2e", pady=10)
+        bar.pack(fill="x", side="bottom")
+
+        def _allow():
+            result["approved"] = True
+            root.destroy()
+
+        def _deny():
+            result["approved"] = False
+            result["reason"] = "Denied via desktop dialog."
+            root.destroy()
+
+        def _deny_feedback():
+            feedback = simpledialog.askstring(
+                "Tell Claude why",
+                "What should Claude do instead?",
+                parent=root,
+            )
+            result["approved"] = False
+            result["reason"] = (
+                feedback.strip() if feedback and feedback.strip()
+                else "Denied via desktop dialog."
+            )
+            root.destroy()
+
+        btn = {"font": ("Segoe UI", 10), "relief": "flat",
+               "cursor": "hand2", "padx": 18, "pady": 7}
+        tk.Button(bar, text="✅  Allow",              bg="#a6e3a1", fg="#1e1e2e", command=_allow,         **btn).pack(side="left", padx=(12, 4))
+        tk.Button(bar, text="❌  Deny",               bg="#f38ba8", fg="#1e1e2e", command=_deny,          **btn).pack(side="left", padx=4)
+        tk.Button(bar, text="💬  Deny with feedback", bg="#89b4fa", fg="#1e1e2e", command=_deny_feedback, **btn).pack(side="left", padx=4)
+
+        root.protocol("WM_DELETE_WINDOW", _deny)  # X button = Deny
+        root.mainloop()
+        return result["approved"], result["reason"]
+
+    except Exception as exc:
+        sys.stderr.write(f"[telegram/approve] popup failed ({exc}), auto-approving\n")
+        return True, ""
+
+
+def get_idle_seconds() -> float:
+    """Return seconds since the last keyboard/mouse input on Windows."""
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_ulong)]
+    lii = LASTINPUTINFO()
+    lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii))
+    elapsed_ms = ctypes.windll.kernel32.GetTickCount() - lii.dwTime
+    return elapsed_ms / 1000.0
+
+
+def read_mode(cfg: dict) -> str:
+    """Return current approval mode: 'auto', 'telegram', or 'local'.
+
+    The mode.txt file takes priority over config.env so that shell
+    aliases and Telegram /mode commands take immediate effect.
+    """
+    if os.path.exists(MODE_FILE):
+        try:
+            return open(MODE_FILE).read().strip().lower()
+        except Exception:
+            pass
+    return cfg.get("APPROVAL_MODE", "auto").lower()
+
+
+def should_use_telegram(cfg: dict) -> bool:
+    """Return True if the approval should be routed to Telegram."""
+    mode = read_mode(cfg)
+    if mode == "telegram":
+        return True
+    if mode == "local":
+        return False
+    # auto: compare idle time to threshold
+    threshold = int(cfg.get("IDLE_THRESHOLD_SECONDS", "300"))
+    idle = get_idle_seconds()
+    return idle >= threshold
+
+
+def load_config() -> dict:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
+    cfg = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                cfg[k.strip()] = v.strip()
+    return cfg
+
+
+def api_post(token: str, method: str, payload: dict) -> dict:
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    data = json.dumps(payload).encode()
+    req = Request(url, data=data, headers={"Content-Type": "application/json"})
+    resp = urlopen(req, timeout=10)
+    return json.loads(resp.read())
+
+
+def format_tool_detail(tool_name: str, tool_input: dict) -> str:
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "").strip()
+        return f"`{cmd[:400]}`"
+    if tool_name in ("Edit", "Write", "NotebookEdit"):
+        path = tool_input.get("file_path", tool_input.get("path", ""))
+        return f"`{path}`"
+    raw = json.dumps(tool_input, indent=2)
+    return f"```\n{raw[:400]}\n```"
+
+
+def approval_file(session_id: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"claude_approval_{session_id}.txt")
+
+
+def read_first_prompt_from_jsonl(session_id: str) -> str:
+    """Read the first user message from Claude's session JSONL file.
+
+    Claude stores sessions at ~/.claude/projects/<project-hash>/<session-id>.jsonl
+    We glob-search across all projects so this works regardless of cwd.
+    """
+    import glob as _glob
+    home = os.path.expanduser("~")
+    pattern = os.path.join(home, ".claude", "projects", "**", f"{session_id}.jsonl")
+    matches = _glob.glob(pattern, recursive=True)
+    if not matches:
+        return ""
+    try:
+        with open(matches[0], encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                # Each line is either a raw message or wrapped in {type, message}
+                msg = obj.get("message", obj)
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "").strip()
+                            if text:
+                                return text
+                elif isinstance(content, str) and content.strip():
+                    return content.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def send_approval_request(token: str, chat_id: str, tool_name: str,
+                           tool_input: dict, session_id: str, cwd: str = "") -> None:
+    detail = format_tool_detail(tool_name, tool_input)
+    short_id = f"…{session_id[-8:]}" if session_id else "unknown"
+    cwd_line = f"\n*Dir:* `{cwd}`" if cwd else ""
+
+    # Resolve session name: stored name → JSONL file → nothing
+    session_name = get_session_name(session_id)
+    if not session_name and session_id:
+        first_prompt = read_first_prompt_from_jsonl(session_id)
+        if first_prompt:
+            session_name = first_prompt[:50].strip()
+            upsert_session(session_id, session_name)
+
+    label_suffix = f" — _{session_name}_" if session_name else ""
+    text = (
+        f"🔧 *Permission Request*{label_suffix}\n"
+        f"`{short_id}`{cwd_line}\n\n"
+        f"*Tool:* `{tool_name}`\n\n{detail}"
+    )
+
+    api_post(token, "sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "reply_markup": {
+            "inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"approve:{session_id}"},
+                {"text": "❌ Deny",    "callback_data": f"deny:{session_id}"},
+            ]]
+        },
+    })
+
+
+def wait_for_decision(session_id: str) -> str:
+    path = approval_file(session_id)
+    if os.path.exists(path):
+        os.remove(path)
+
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if os.path.exists(path):
+            with open(path) as f:
+                decision = f.read().strip()
+            os.remove(path)
+            return decision
+        time.sleep(0.5)
+
+    return "timeout"
+
+
+def main() -> None:
+    try:
+        cfg = load_config()
+        hook = json.load(sys.stdin)
+
+        tool_name = hook.get("tool_name", "unknown")
+        tool_input = hook.get("tool_input", {})
+        session_id = hook.get("session_id", "default")
+        cwd = hook.get("cwd", "")
+
+        if should_use_telegram(cfg):
+            # ── Away mode: Telegram approval ──────────────────────────────
+            token = cfg["TELEGRAM_BOT_TOKEN"]
+            chat_id = cfg["TELEGRAM_CHAT_ID"]
+
+            send_approval_request(token, chat_id, tool_name, tool_input, session_id, cwd)
+            decision = wait_for_decision(session_id)
+
+            if decision == "approve":
+                sys.exit(0)
+
+            reason = (
+                "Timed out waiting for Telegram approval (120s)."
+                if decision == "timeout"
+                else "Denied via Telegram."
+            )
+            print(json.dumps({"decision": "block", "reason": reason}))
+            sys.exit(2)
+
+        else:
+            # ── At desk mode: desktop popup ────────────────────────────────
+            approved, reason = show_desktop_popup(tool_name, tool_input, cwd)
+            if approved:
+                sys.exit(0)
+
+            print(json.dumps({"decision": "block", "reason": reason}))
+            sys.exit(2)
+
+    except Exception as exc:
+        sys.stderr.write(f"[telegram/approve] {exc}\n")
+        sys.exit(0)  # Fail open so Claude isn't permanently stuck
+
+
+if __name__ == "__main__":
+    main()

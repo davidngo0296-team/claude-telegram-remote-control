@@ -1,0 +1,173 @@
+"""Run `claude -p` as a subprocess and stream the response to Telegram.
+
+Edits a single Telegram message progressively as chunks arrive.
+Handles long responses by splitting into multiple messages.
+Saves session_id + name so the session picker can display it by name.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+TELEGRAM_ENV_MARKER = "CLAUDE_TELEGRAM_INITIATED"
+MAX_LEN = 3800
+EDIT_INTERVAL = 0.8
+
+# Add this dir to path so sessions.py can be imported
+sys.path.insert(0, str(Path(__file__).parent))
+import sessions as sess_store
+
+
+def _load_config() -> dict:
+    path = Path(__file__).parent / "config.env"
+    cfg = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            cfg[k.strip()] = v.strip()
+    return cfg
+
+
+def _api_post(token: str, method: str, payload: dict) -> dict:
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    data = json.dumps(payload).encode()
+    req = Request(url, data=data, headers={"Content-Type": "application/json"})
+    resp = urlopen(req, timeout=10)
+    return json.loads(resp.read())
+
+
+def send_message(token: str, chat_id: str, text: str) -> int:
+    result = _api_post(token, "sendMessage", {
+        "chat_id": chat_id,
+        "text": text or "…",
+        "parse_mode": "Markdown",
+    })
+    return result["result"]["message_id"]
+
+
+def edit_message(token: str, chat_id: str, message_id: int, text: str) -> None:
+    try:
+        _api_post(token, "editMessageText", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text or "…",
+            "parse_mode": "Markdown",
+        })
+    except Exception:
+        pass
+
+
+def run_and_stream(token: str, chat_id: str, prompt: str,
+                   session_id: str | None = None) -> None:
+    """Run claude -p and stream the response to Telegram.
+
+    Args:
+        token: Telegram bot token.
+        chat_id: Telegram chat ID to send messages to.
+        prompt: The user's message to send to Claude.
+        session_id: If provided, resume this session. If None, start a new one.
+    """
+    cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
+    if session_id:
+        cmd += ["--resume", session_id]
+
+    env = {**os.environ, TELEGRAM_ENV_MARKER: "1"}
+
+    # On Windows, Claude is installed as claude.cmd which requires shell=True
+    use_shell = sys.platform == "win32"
+    popen_cmd = subprocess.list2cmdline(cmd) if use_shell else cmd
+
+    message_id = send_message(token, chat_id, "⌛ _Thinking…_")
+
+    accumulated = ""
+    new_session_id: str | None = None
+    last_edit = 0.0
+
+    try:
+        proc = subprocess.Popen(
+            popen_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=use_shell,
+        )
+
+        for raw_line in proc.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                accumulated += raw_line
+                continue
+
+            etype = event.get("type", "")
+
+            if etype == "assistant":
+                for block in event.get("message", {}).get("content", []):
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        accumulated += block.get("text", "")
+
+            elif etype == "text":
+                accumulated += event.get("text", "")
+
+            elif etype == "result":
+                new_session_id = event.get("session_id")
+
+            now = time.monotonic()
+            if accumulated and now - last_edit > EDIT_INTERVAL:
+                edit_message(token, chat_id, message_id, _tail(accumulated))
+                last_edit = now
+
+        proc.wait()
+
+    except Exception as exc:
+        accumulated = accumulated or f"_(Error: {exc})_"
+
+    # Save / update session with a human-readable name
+    resolved_id = new_session_id or session_id
+    if resolved_id:
+        existing = sess_store.get(resolved_id)
+        if existing:
+            sess_store.upsert(resolved_id)           # just update last_used
+        else:
+            name = prompt[:50].strip()               # use prompt as initial name
+            if len(prompt) > 50:
+                name += "…"
+            sess_store.upsert(resolved_id, name)
+
+    # Mirror final response to listener terminal for local monitoring
+    if accumulated:
+        print(f"\n[Telegram → Claude]\n{accumulated}\n", file=sys.stderr)
+
+    # Final publish
+    if not accumulated:
+        edit_message(token, chat_id, message_id, "_(No response received)_")
+        return
+
+    if len(accumulated) <= MAX_LEN:
+        edit_message(token, chat_id, message_id, accumulated)
+    else:
+        edit_message(token, chat_id, message_id, accumulated[:MAX_LEN] + " _(cont.)_")
+        rest = accumulated[MAX_LEN:]
+        while rest:
+            send_message(token, chat_id, rest[:MAX_LEN])
+            rest = rest[MAX_LEN:]
+
+
+def _tail(text: str) -> str:
+    if len(text) <= MAX_LEN:
+        return text
+    return "…" + text[-MAX_LEN:]
