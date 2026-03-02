@@ -56,6 +56,9 @@ _pending_prompts: dict[str, str] = {}
 # Pending sessions: maps chat_id → session_id (user tapped ▶ Continue, waiting for prompt)
 _pending_sessions: dict[str, str] = {}
 
+# Pending feedback: maps chat_id → session_id (user tapped 💬 Deny with feedback)
+_pending_feedback: dict[str, str] = {}
+
 
 # ── Approval button handler ────────────────────────────────────────────────
 
@@ -70,7 +73,7 @@ def handle_callback(token: str, callback_query: dict) -> None:
     action = parts[0]
     payload = parts[1] if len(parts) > 1 else ""
 
-    # ── Tool approval (approve/deny) ───────────────────────────────────────
+    # ── Tool approval ──────────────────────────────────────────────────────
     if action in ("approve", "deny"):
         session_id = payload
         with open(approval_file(session_id), "w") as f:
@@ -90,6 +93,46 @@ def handle_callback(token: str, callback_query: dict) -> None:
         })
         ts = time.strftime("%H:%M:%S")
         print(f"[{ts}] {action.upper():6s} — session {session_id[:8]}")
+
+    elif action == "allow_always":
+        session_id = payload
+        with open(approval_file(session_id), "w") as f:
+            f.write("allow_always")
+        _api_post(token, "answerCallbackQuery", {
+            "callback_query_id": callback_id,
+            "text": "🔒 Always allowed!",
+        })
+        _api_post(token, "editMessageText", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": "🔒 *Always allowed*",
+            "parse_mode": "Markdown",
+            "reply_markup": {"inline_keyboard": []},
+        })
+        ts = time.strftime("%H:%M:%S")
+        print(f"[{ts}] ALWAYS  — session {session_id[:8]}")
+
+    elif action == "feedback":
+        session_id = payload
+        _pending_feedback[chat_id] = session_id
+        _api_post(token, "answerCallbackQuery", {
+            "callback_query_id": callback_id,
+            "text": "Send your feedback",
+        })
+        _api_post(token, "editMessageText", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": "💬 *Awaiting feedback…*",
+            "parse_mode": "Markdown",
+            "reply_markup": {"inline_keyboard": []},
+        })
+        _api_post(token, "sendMessage", {
+            "chat_id": chat_id,
+            "text": "What should Claude do instead?",
+            "reply_markup": {"force_reply": True, "selective": True},
+        })
+        ts = time.strftime("%H:%M:%S")
+        print(f"[{ts}] FDBK_WAIT — session {session_id[:8]}")
 
     # ── Continue (from Done notification) ─────────────────────────────────
     elif action == "continue":
@@ -144,6 +187,17 @@ def handle_callback(token: str, callback_query: dict) -> None:
 
 def handle_text_message(token: str, chat_id: str, text: str) -> None:
     text = text.strip()
+
+    # ── Pending deny-with-feedback reply ───────────────────────────────────
+    if chat_id in _pending_feedback:
+        session_id = _pending_feedback.pop(chat_id)
+        reason = text or "Denied via Telegram."
+        with open(approval_file(session_id), "w") as f:
+            f.write(f"deny:{reason}")
+        send_message(token, chat_id, f"💬 *Denied with feedback:* _{reason[:100]}_")
+        ts = time.strftime("%H:%M:%S")
+        print(f"[{ts}] FDBK_SENT — session {session_id[:8]}: {reason[:60]}")
+        return
 
     # ── Commands ───────────────────────────────────────────────────────────
     if text.lower() in ("/new", "/reset"):
