@@ -19,6 +19,7 @@ import os
 import sys
 import time
 import tempfile
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 
@@ -228,6 +229,56 @@ def format_tool_detail(tool_name: str, tool_input: dict) -> str:
         return f"`{path}`"
     raw = json.dumps(tool_input, indent=2)
     return f"```\n{raw[:400]}\n```"
+
+
+def build_allow_rule(tool_name: str, tool_input: dict) -> str:
+    """Build a permissions.allow rule string for the given tool call.
+
+    Bash → Bash(<first-word> *)   e.g. "git status" → "Bash(git *)"
+    Edit/Write/NotebookEdit → "Edit"  (shared permission umbrella)
+    Anything else → tool name only
+    """
+    if tool_name == "Bash":
+        command = tool_input.get("command", "").strip()
+        words = command.split()
+        if not words:
+            return "Bash"
+        return f"Bash({words[0]} *)"
+    if tool_name in ("Edit", "Write", "NotebookEdit"):
+        return "Edit"
+    return tool_name
+
+
+def write_allow_rule(cwd: str, rule: str) -> None:
+    """Write a permissions.allow rule to .claude/settings.json.
+
+    Uses <cwd>/.claude/settings.json if cwd is a valid directory,
+    otherwise falls back to ~/.claude/settings.json.
+    Creates the file and directory if they don't exist.
+    Skips silently if the rule is already present.
+    Logs errors to stderr but never raises (fail-open).
+    """
+    try:
+        if cwd and os.path.isdir(cwd):
+            settings_path = Path(cwd) / ".claude" / "settings.json"
+        else:
+            settings_path = Path.home() / ".claude" / "settings.json"
+
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+
+        permissions = data.setdefault("permissions", {})
+        allow_list = permissions.setdefault("allow", [])
+
+        if rule not in allow_list:
+            allow_list.append(rule)
+            settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as exc:
+        sys.stderr.write(f"[telegram/approve] write_allow_rule failed: {exc}\n")
 
 
 def approval_file(session_id: str) -> str:
