@@ -77,7 +77,7 @@ def _render_activity(tool_calls: list) -> str:
                 parts.append(f"{icon} *{tc['name']}:* `{snippet}` ✓\n")
         else:
             parts.append(f"{icon} *{tc['name']}:* `{snippet}` ⏳\n")
-    text = "\n".join(parts)
+    text = "".join(parts)
     if len(text) > MAX_LEN:
         return "…" + text[-MAX_LEN:]
     return text

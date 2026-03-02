@@ -17,6 +17,9 @@ def test_read_extracts_file_path():
 def test_edit_extracts_file_path():
     assert _format_input_snippet("Edit", {"file_path": "config.json"}) == "config.json"
 
+def test_write_extracts_file_path():
+    assert _format_input_snippet("Write", {"file_path": "output.txt"}) == "output.txt"
+
 def test_unknown_tool_serializes_json():
     result = _format_input_snippet("Glob", {"pattern": "**/*.py"})
     assert "**/*.py" in result
@@ -68,9 +71,14 @@ def test_render_done_tool_shows_checkmark():
     result = _render_activity(calls)
     assert "✓" in result
 
-def test_render_skips_thinking_not_present():
-    # thinking blocks should never appear in tool_calls
+def test_render_running_tool_shows_name_and_snippet():
     calls = [{"name": "Read", "snippet": "main.py", "result_lines": "", "done": False}]
     result = _render_activity(calls)
     assert "Read" in result
     assert "main.py" in result
+
+def test_render_done_tool_no_result_shows_plain_checkmark():
+    calls = [{"name": "Bash", "snippet": "ls", "result_lines": "", "done": True}]
+    result = _render_activity(calls)
+    assert "✓" in result
+    assert "```" not in result
