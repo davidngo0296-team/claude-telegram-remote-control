@@ -150,7 +150,9 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
 
     message_id = send_message(token, chat_id, "⌛ _Thinking…_")
 
-    accumulated = ""
+    tool_calls: list[dict] = []   # {id, name, snippet, result_lines, done}
+    id_to_idx: dict[str, int] = {}
+    final_text = ""
     new_session_id: str | None = None
     last_edit = 0.0
 
@@ -174,31 +176,64 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
-                accumulated += raw_line
                 continue
 
             etype = event.get("type", "")
 
             if etype == "assistant":
                 for block in event.get("message", {}).get("content", []):
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        accumulated += block.get("text", "")
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype == "thinking":
+                        pass  # explicitly skip thinking blocks
+                    elif btype == "text":
+                        final_text += block.get("text", "")
+                    elif btype == "tool_use":
+                        tool_id = block.get("id", "")
+                        name = block.get("name", "")
+                        snippet = _format_input_snippet(name, block.get("input", {}))
+                        idx = len(tool_calls)
+                        tool_calls.append({
+                            "id": tool_id,
+                            "name": name,
+                            "snippet": snippet,
+                            "result_lines": "",
+                            "done": False,
+                        })
+                        id_to_idx[tool_id] = idx
+
+            elif etype == "user":
+                for block in event.get("message", {}).get("content", []):
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        tool_id = block.get("tool_use_id", "")
+                        idx = id_to_idx.get(tool_id)
+                        if idx is not None:
+                            tool_calls[idx]["result_lines"] = _truncate_result(
+                                block.get("content", ""))
+                            tool_calls[idx]["done"] = True
 
             elif etype == "text":
-                accumulated += event.get("text", "")
+                final_text += event.get("text", "")
 
             elif etype == "result":
                 new_session_id = event.get("session_id")
 
             now = time.monotonic()
-            if accumulated and now - last_edit > EDIT_INTERVAL:
-                edit_message(token, chat_id, message_id, _tail(accumulated))
+            if now - last_edit > EDIT_INTERVAL:
+                if tool_calls and not final_text:
+                    edit_message(token, chat_id, message_id,
+                                 _render_activity(tool_calls))
+                elif final_text:
+                    edit_message(token, chat_id, message_id, _tail(final_text))
                 last_edit = now
 
         proc.wait()
 
     except Exception as exc:
-        accumulated = accumulated or f"_(Error: {exc})_"
+        final_text = final_text or f"_(Error: {exc})_"
 
     # Save / update session with a human-readable name
     resolved_id = new_session_id or session_id
@@ -212,23 +247,26 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                 name += "…"
             sess_store.upsert(resolved_id, name)
 
-    # Mirror final response to listener terminal for local monitoring
-    if accumulated:
-        print(f"\n[Telegram → Claude]\n{accumulated}\n", file=sys.stderr)
+    # Mirror final response to terminal for local monitoring
+    if final_text:
+        print(f"\n[Telegram → Claude]\n{final_text}\n", file=sys.stderr)
 
-    # Final publish
-    if not accumulated:
-        edit_message(token, chat_id, message_id, "_(No response received)_")
-        return
-
-    if len(accumulated) <= MAX_LEN:
-        edit_message(token, chat_id, message_id, accumulated)
+    # Final publish — replace live activity with the actual response
+    if final_text:
+        if len(final_text) <= MAX_LEN:
+            edit_message(token, chat_id, message_id, final_text)
+        else:
+            edit_message(token, chat_id, message_id,
+                         final_text[:MAX_LEN] + " _(cont.)_")
+            rest = final_text[MAX_LEN:]
+            while rest:
+                send_message(token, chat_id, rest[:MAX_LEN])
+                rest = rest[MAX_LEN:]
+    elif tool_calls:
+        edit_message(token, chat_id, message_id,
+                     f"_(Done — {len(tool_calls)} tool call(s))_")
     else:
-        edit_message(token, chat_id, message_id, accumulated[:MAX_LEN] + " _(cont.)_")
-        rest = accumulated[MAX_LEN:]
-        while rest:
-            send_message(token, chat_id, rest[:MAX_LEN])
-            rest = rest[MAX_LEN:]
+        edit_message(token, chat_id, message_id, "_(No response received)_")
 
 
 def _tail(text: str) -> str:
