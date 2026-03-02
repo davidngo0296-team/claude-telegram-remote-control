@@ -408,6 +408,8 @@ def main() -> None:
 
             if decision.startswith("deny:"):
                 reason = decision[5:].strip() or "Denied via Telegram."
+            elif decision == "deny":
+                reason = "Denied via Telegram."
             elif decision == "timeout":
                 reason = "Timed out waiting for Telegram approval."
             else:
