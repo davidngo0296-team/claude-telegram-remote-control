@@ -6,7 +6,7 @@ Handles:
   - Text messages (sends to Claude, streams response back)
 
 Run this before starting Claude Code sessions:
-    python C:/Users/an.gia.ngo/.claude/telegram/listener.py
+    python listener.py
 """
 
 import json
@@ -76,6 +76,7 @@ def handle_callback(token: str, callback_query: dict) -> None:
     # ── Tool approval ──────────────────────────────────────────────────────
     if action in ("approve", "deny"):
         session_id = payload
+        _pending_feedback.pop(chat_id, None)   # clear any stale feedback state
         with open(approval_file(session_id), "w") as f:
             f.write(action)
 
