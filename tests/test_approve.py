@@ -21,6 +21,9 @@ def test_bash_single_word_command():
 def test_bash_empty_command_returns_bare_bash():
     assert build_allow_rule("Bash", {"command": ""}) == "Bash"
 
+def test_bash_whitespace_only_command_returns_bare_bash():
+    assert build_allow_rule("Bash", {"command": "   "}) == "Bash"
+
 def test_bash_missing_command_key_returns_bare_bash():
     assert build_allow_rule("Bash", {}) == "Bash"
 
@@ -92,3 +95,16 @@ def test_falls_back_to_home_if_cwd_nonexistent(tmp_path, monkeypatch):
     write_allow_rule("/nonexistent/path/xyz", "Read")
     settings_path = tmp_path / ".claude" / "settings.json"
     assert settings_path.exists()
+    data = json.loads(settings_path.read_text())
+    assert "Read" in data["permissions"]["allow"]
+
+def test_corrupt_json_is_replaced_with_warning(tmp_path, capsys):
+    settings_dir = tmp_path / ".claude"
+    settings_dir.mkdir()
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text("{ not valid json }")
+    write_allow_rule(str(tmp_path), "Bash(git *)")
+    data = json.loads(settings_path.read_text())
+    assert "Bash(git *)" in data["permissions"]["allow"]
+    captured = capsys.readouterr()
+    assert "parse error" in captured.err

@@ -268,7 +268,8 @@ def write_allow_rule(cwd: str, rule: str) -> None:
 
         try:
             data = json.loads(settings_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as parse_exc:
+            sys.stderr.write(f"[telegram/approve] settings.json parse error ({parse_exc}), starting fresh\n")
             data = {}
 
         permissions = data.setdefault("permissions", {})
