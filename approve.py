@@ -349,10 +349,16 @@ def send_approval_request(token: str, chat_id: str, tool_name: str,
         "text": text,
         "parse_mode": "Markdown",
         "reply_markup": {
-            "inline_keyboard": [[
-                {"text": "✅ Approve", "callback_data": f"approve:{session_id}"},
-                {"text": "❌ Deny",    "callback_data": f"deny:{session_id}"},
-            ]]
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Approve",            "callback_data": f"approve:{session_id}"},
+                    {"text": "🔒 Always allow",        "callback_data": f"allow_always:{session_id}"},
+                ],
+                [
+                    {"text": "❌ Deny",               "callback_data": f"deny:{session_id}"},
+                    {"text": "💬 Deny with feedback", "callback_data": f"feedback:{session_id}"},
+                ],
+            ]
         },
     })
 
@@ -395,11 +401,18 @@ def main() -> None:
             if decision == "approve":
                 sys.exit(0)
 
-            reason = (
-                "Timed out waiting for Telegram approval (120s)."
-                if decision == "timeout"
-                else "Denied via Telegram."
-            )
+            if decision == "allow_always":
+                rule = build_allow_rule(tool_name, tool_input)
+                write_allow_rule(cwd, rule)
+                sys.exit(0)
+
+            if decision.startswith("deny:"):
+                reason = decision[5:].strip() or "Denied via Telegram."
+            elif decision == "timeout":
+                reason = "Timed out waiting for Telegram approval."
+            else:
+                reason = "Denied via Telegram."
+
             print(json.dumps({"decision": "block", "reason": reason}))
             sys.exit(2)
 
