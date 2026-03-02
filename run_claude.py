@@ -155,6 +155,7 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
     final_text = ""
     new_session_id: str | None = None
     last_edit = 0.0
+    proc = None
 
     try:
         proc = subprocess.Popen(
@@ -209,6 +210,8 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                         continue
                     if block.get("type") == "tool_result":
                         tool_id = block.get("tool_use_id", "")
+                        if not tool_id:
+                            continue
                         idx = id_to_idx.get(tool_id)
                         if idx is not None:
                             tool_calls[idx]["result_lines"] = _truncate_result(
@@ -216,6 +219,9 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                             tool_calls[idx]["done"] = True
 
             elif etype == "text":
+                # Streaming text delta — present in some SDK output modes.
+                # With --verbose stream-json, text arrives via assistant events above;
+                # this branch handles other modes without duplication in practice.
                 final_text += event.get("text", "")
 
             elif etype == "result":
@@ -230,10 +236,11 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                     edit_message(token, chat_id, message_id, _tail(final_text))
                 last_edit = now
 
-        proc.wait()
-
     except Exception as exc:
         final_text = final_text or f"_(Error: {exc})_"
+    finally:
+        if proc is not None:
+            proc.wait()
 
     # Save / update session with a human-readable name
     resolved_id = new_session_id or session_id
@@ -256,9 +263,10 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
         if len(final_text) <= MAX_LEN:
             edit_message(token, chat_id, message_id, final_text)
         else:
+            CONT = " _(cont.)_"
             edit_message(token, chat_id, message_id,
-                         final_text[:MAX_LEN] + " _(cont.)_")
-            rest = final_text[MAX_LEN:]
+                         final_text[:MAX_LEN - len(CONT)] + CONT)
+            rest = final_text[MAX_LEN - len(CONT):]
             while rest:
                 send_message(token, chat_id, rest[:MAX_LEN])
                 rest = rest[MAX_LEN:]
