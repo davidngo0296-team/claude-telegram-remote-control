@@ -98,6 +98,7 @@ def handle_callback(token: str, callback_query: dict) -> None:
         session_id = payload
         with open(approval_file(session_id), "w") as f:
             f.write("allow_always")
+        _pending_feedback.pop(chat_id, None)  # clear any stale feedback state
         _api_post(token, "answerCallbackQuery", {
             "callback_query_id": callback_id,
             "text": "🔒 Always allowed!",
@@ -194,7 +195,7 @@ def handle_text_message(token: str, chat_id: str, text: str) -> None:
         reason = text or "Denied via Telegram."
         with open(approval_file(session_id), "w") as f:
             f.write(f"deny:{reason}")
-        send_message(token, chat_id, f"💬 *Denied with feedback:* _{reason[:100]}_")
+        send_message(token, chat_id, f"💬 *Denied with feedback:*\n{reason[:100]}")
         ts = time.strftime("%H:%M:%S")
         print(f"[{ts}] FDBK_SENT — session {session_id[:8]}: {reason[:60]}")
         return
