@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 
-TIMEOUT_SECONDS = 3600  # 1 hour
+TIMEOUT_SECONDS = 36000  # 10 hours
 MODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mode.txt")
 SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram_sessions.json")
 
