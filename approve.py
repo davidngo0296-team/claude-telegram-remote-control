@@ -79,17 +79,19 @@ def plain_content(tool_name: str, tool_input: dict) -> str:
 
 
 def show_desktop_popup(tool_name: str, tool_input: dict, cwd: str = "") -> tuple:
-    """Show an approval dialog matching the CLI experience.
+    """Show an approval dialog mirroring the Telegram 2×2 button layout.
 
-    Three options — Allow / Deny / Deny with feedback.
-    Returns (approved: bool, reason: str).
-    Falls back to auto-approve if tkinter is unavailable.
+    Returns (decision: str, reason: str) where decision is one of:
+      "allow"        — proceed
+      "allow_always" — proceed and write a permanent allow rule
+      "deny"         — block with reason
+    Falls back to ("allow", "") if tkinter is unavailable.
     """
     try:
         import tkinter as tk
         from tkinter import scrolledtext, simpledialog
 
-        result = {"approved": False, "reason": "Denied via desktop dialog."}
+        result = {"decision": "deny", "reason": "Denied via desktop dialog."}
 
         root = tk.Tk()
         root.title(f"Claude — {tool_name}")
@@ -121,16 +123,20 @@ def show_desktop_popup(tool_name: str, tool_input: dict, cwd: str = "") -> tuple
         txt.config(state="disabled")
         txt.pack(fill="both", expand=True)
 
-        # ── Button bar ───────────────────────────────────────────────────
+        # ── Button bar (2×2 matching Telegram layout) ─────────────────────
         bar = tk.Frame(root, bg="#1e1e2e", pady=10)
         bar.pack(fill="x", side="bottom")
 
         def _allow():
-            result["approved"] = True
+            result["decision"] = "allow"
+            root.destroy()
+
+        def _allow_always():
+            result["decision"] = "allow_always"
             root.destroy()
 
         def _deny():
-            result["approved"] = False
+            result["decision"] = "deny"
             result["reason"] = "Denied via desktop dialog."
             root.destroy()
 
@@ -140,26 +146,34 @@ def show_desktop_popup(tool_name: str, tool_input: dict, cwd: str = "") -> tuple
                 "What should Claude do instead?",
                 parent=root,
             )
-            result["approved"] = False
+            result["decision"] = "deny"
             result["reason"] = (
                 feedback.strip() if feedback and feedback.strip()
                 else "Denied via desktop dialog."
             )
             root.destroy()
 
-        btn = {"font": ("Segoe UI", 10), "relief": "flat",
-               "cursor": "hand2", "padx": 18, "pady": 7}
-        tk.Button(bar, text="✅  Allow",              bg="#a6e3a1", fg="#1e1e2e", command=_allow,         **btn).pack(side="left", padx=(12, 4))
-        tk.Button(bar, text="❌  Deny",               bg="#f38ba8", fg="#1e1e2e", command=_deny,          **btn).pack(side="left", padx=4)
-        tk.Button(bar, text="💬  Deny with feedback", bg="#89b4fa", fg="#1e1e2e", command=_deny_feedback, **btn).pack(side="left", padx=4)
+        btn = {"font": ("Segoe UI", 10), "relief": "flat", "cursor": "hand2",
+               "padx": 18, "pady": 7}
+        row1 = tk.Frame(bar, bg="#1e1e2e")
+        row1.pack(fill="x", padx=12, pady=(0, 4))
+        row2 = tk.Frame(bar, bg="#1e1e2e")
+        row2.pack(fill="x", padx=12)
+
+        # Row 1: Allow  |  Always allow
+        tk.Button(row1, text="✅  Allow",        bg="#a6e3a1", fg="#1e1e2e", command=_allow,        **btn).pack(side="left", padx=(0, 4))
+        tk.Button(row1, text="🔒  Always allow", bg="#f9e2af", fg="#1e1e2e", command=_allow_always, **btn).pack(side="left")
+        # Row 2: Deny   |  Deny with feedback
+        tk.Button(row2, text="❌  Deny",               bg="#f38ba8", fg="#1e1e2e", command=_deny,          **btn).pack(side="left", padx=(0, 4))
+        tk.Button(row2, text="💬  Deny with feedback", bg="#89b4fa", fg="#1e1e2e", command=_deny_feedback, **btn).pack(side="left")
 
         root.protocol("WM_DELETE_WINDOW", _deny)  # X button = Deny
         root.mainloop()
-        return result["approved"], result["reason"]
+        return result["decision"], result["reason"]
 
     except Exception as exc:
         sys.stderr.write(f"[telegram/approve] popup failed ({exc}), auto-approving\n")
-        return True, ""
+        return "allow", ""
 
 
 def get_idle_seconds() -> float:
@@ -420,8 +434,14 @@ def main() -> None:
 
         else:
             # ── At desk mode: desktop popup ────────────────────────────────
-            approved, reason = show_desktop_popup(tool_name, tool_input, cwd)
-            if approved:
+            decision, reason = show_desktop_popup(tool_name, tool_input, cwd)
+
+            if decision == "allow":
+                sys.exit(0)
+
+            if decision == "allow_always":
+                rule = build_allow_rule(tool_name, tool_input)
+                write_allow_rule(cwd, rule)
                 sys.exit(0)
 
             print(json.dumps({"decision": "block", "reason": reason}))

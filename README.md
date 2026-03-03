@@ -1,4 +1,4 @@
-# Claude Code — Telegram Integration Setup
+# Claude Code — Telegram Integration
 
 Receive notifications when Claude finishes or waits for input, approve tool use (Bash, Edit, Write) from your phone, and send prompts to Claude remotely.
 
@@ -28,17 +28,23 @@ Copy the `~/.claude/telegram/` folder to the same path on your machine:
 
 ```
 ~/.claude/telegram/
-  approve.py          # handles tool approval (Telegram or desktop popup)
+  approve.py          # handles tool approval (Telegram buttons or desktop popup)
   notify.py           # sends Stop / Notification events to Telegram
   listener.py         # background polling loop (runs persistently)
   run_claude.py       # runs claude -p and streams response to Telegram
   sessions.py         # session name store
-  config.env          # your credentials (edit this)
+  config.env.example  # credentials template — copy to config.env and fill in
 ```
 
 ---
 
 ## Step 3 — Configure credentials
+
+Copy `config.env.example` to `config.env` and fill in your values:
+
+```bash
+cp config.env.example config.env
+```
 
 Edit `~/.claude/telegram/config.env`:
 
@@ -53,6 +59,8 @@ TELEGRAM_CHAT_ID=<your-chat-id-from-userinfobot>
 APPROVAL_MODE=auto
 IDLE_THRESHOLD_SECONDS=300
 ```
+
+> **Keep `config.env` private** — it contains your bot token and chat ID.
 
 ---
 
@@ -120,24 +128,40 @@ python %USERPROFILE%/.claude/telegram/listener.py
 | ----------------------------------- | ------------------------------------------------------------ |
 | Claude finishes a task              | ✅ Done — session name + last prompt + Claude's response      |
 | Claude is waiting for input         | ⏳ Waiting for input — response shown for context             |
-| Claude wants to run Bash/Edit/Write | 🔧 Permission Request — full command + Approve / Deny buttons |
+| Claude is working                   | ⌛ Live activity log — each tool call shown as it runs        |
+| Claude wants to run Bash/Edit/Write | 🔧 Permission Request — full command + 4 approval buttons    |
 | Claude needs info (notification)    | 🔔 Notice — message text                                      |
 
 **Done notifications** include a **▶ Continue** button — tap it, then type your next task to resume the same session remotely.
+
+### Approval buttons
+
+Each tool request shows a 2×2 button layout:
+
+| Button | Action |
+| ------ | ------ |
+| ✅ Approve | Allow this one tool call |
+| 🔒 Always allow | Allow and write a permanent rule to `settings.json` |
+| ❌ Deny | Block the tool call |
+| 💬 Deny with feedback | Block and send a reason to Claude |
+
+The same 4 buttons are shown in the desktop popup when you are at your machine.
 
 ---
 
 ## Telegram commands
 
-| Command          | Action                                                                      |
-| ---------------- | --------------------------------------------------------------------------- |
-| `<any text>`     | Send a prompt to Claude (session picker appears if multiple sessions exist) |
-| `/sessions`      | List saved sessions with full IDs (for `claude --resume`)                   |
-| `/rename <name>` | Rename the most recent session                                              |
-| `/mode auto`     | Auto-detect: Telegram when idle ≥ threshold, popup when active              |
-| `/mode telegram` | Always use Telegram for approvals                                           |
-| `/mode local`    | Always use desktop popup for approvals                                      |
-| `/help`          | Show command list                                                           |
+| Command      | Action                                                                      |
+| ------------ | --------------------------------------------------------------------------- |
+| `<any text>` | Send a prompt to Claude (session picker appears if multiple sessions exist) |
+| `/new`       | Start a fresh conversation                                                  |
+| `/sessions`  | List saved sessions with full IDs (for `claude --resume`)                   |
+| `/rename`    | Pick a conversation to rename (shows inline session picker)                 |
+| `/mode`      | Show current approval mode                                                  |
+| `/mode auto` | Auto-detect: Telegram when idle ≥ threshold, popup when active              |
+| `/mode telegram` | Always use Telegram for approvals                                       |
+| `/mode local` | Always use desktop popup for approvals                                     |
+| `/help`      | Show command list                                                           |
 
 ---
 

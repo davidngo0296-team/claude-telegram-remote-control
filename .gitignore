@@ -1,5 +1,17 @@
+# Credentials — copy config.env.example → config.env and fill in your values
+config.env
+
 # Telegram session data (contains sensitive auth tokens)
 telegram_sessions.json
+
+# Runtime state
+mode.txt
+
+# Local dev settings
+.claude/
+
+# Dev planning notes
+docs/plans/
 
 # Python cache
 __pycache__/

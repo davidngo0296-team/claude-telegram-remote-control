@@ -288,7 +288,17 @@ def main() -> None:
         hook = json.load(sys.stdin)
         label = session_label(hook)
 
-        if event == "stop":
+        if event == "prompt":
+            prompt_text = hook.get("prompt", "").strip()
+            if not prompt_text:
+                sys.exit(0)
+            label = session_label(hook)
+            truncated = prompt_text[:400] + ("…" if len(prompt_text) > 400 else "")
+            text = f"💬 *You* — {label}\n\n{truncated}"
+            send(token, chat_id, text)
+            sys.exit(0)
+
+        elif event == "stop":
             prompt = last_prompt(hook)
             if hook.get("stop_hook_active"):
                 # Claude is waiting for input — show its response so you have context
