@@ -179,26 +179,70 @@ def _extract_text(content) -> str:
     return ""
 
 
-def last_assistant_response(hook: dict, max_chars: int = 800) -> str:
-    """Return the most recent assistant text response.
+def _extract_ask_user_question(content) -> str:
+    """Format an AskUserQuestion tool_use block into readable text."""
+    if not isinstance(content, list):
+        return ""
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_use" or block.get("name") != "AskUserQuestion":
+            continue
+        questions = block.get("input", {}).get("questions", [])
+        parts = []
+        for q in questions:
+            question_text = q.get("question", "")
+            if question_text:
+                parts.append(f"❓ {question_text}")
+            for i, opt in enumerate(q.get("options", []), 1):
+                label = opt.get("label", "")
+                desc = opt.get("description", "")
+                parts.append(f"  {i}. *{label}*" + (f" — {desc}" if desc else ""))
+        if parts:
+            return "\n".join(parts)
+    return ""
 
-    Tries the hook transcript first (handles both raw and JSONL-wrapped formats),
-    then falls back to reading the session JSONL file directly.
+
+def last_assistant_response(hook: dict, max_chars: int = 800) -> str:
+    """Return the assistant's response from the current turn.
+
+    Anchors on the last user message so we never surface text from an earlier
+    turn. Tries the hook transcript first, then the session JSONL file.
     """
     def _trunc(t: str) -> str:
         return (t[:max_chars] + "…") if len(t) > max_chars else t
 
-    # 1. Scan transcript (may be raw {role,content} or JSONL-wrapped {message:{role,content}})
-    transcript = hook.get("transcript", [])
-    for entry in reversed(transcript):
-        msg = entry.get("message", entry)          # unwrap if JSONL-style
-        if msg.get("role") != "assistant":
-            continue
-        text = _extract_text(msg.get("content", ""))
-        if text:
-            return _trunc(text)
+    def _response_after_last_user(messages: list) -> str:
+        """Collect all assistant text/questions that follow the last user message."""
+        # Find the index of the last user message
+        last_user = -1
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "user":
+                last_user = i
+        # Gather text from every assistant entry after that point
+        text_parts = []
+        question = ""
+        for msg in messages[last_user + 1:]:
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", "")
+            t = _extract_text(content)
+            if t:
+                text_parts.append(t)
+            if not question:
+                question = _extract_ask_user_question(content)
+        combined = " ".join(text_parts).strip()
+        return combined or question
 
-    # 2. Fall back to the session JSONL file (most reliable)
+    # 1. Try the hook transcript (entries may be raw or JSONL-wrapped)
+    transcript = hook.get("transcript", [])
+    msgs = [entry.get("message", entry) for entry in transcript
+            if entry.get("message", entry).get("role")]
+    text = _response_after_last_user(msgs)
+    if text:
+        return _trunc(text)
+
+    # 2. Fall back to the session JSONL file
     session_id = hook.get("session_id", "")
     if not session_id:
         return ""
@@ -210,14 +254,18 @@ def last_assistant_response(hook: dict, max_chars: int = 800) -> str:
         try:
             with open(jsonl_path, encoding="utf-8") as f:
                 lines = [l.strip() for l in f if l.strip()]
-            for line in reversed(lines):
-                obj = json.loads(line)
-                msg = obj.get("message", obj)
-                if msg.get("role") != "assistant":
-                    continue
-                text = _extract_text(msg.get("content", ""))
-                if text:
-                    return _trunc(text)
+            msgs = []
+            for line in lines:
+                try:
+                    obj = json.loads(line)
+                    msg = obj.get("message", obj)
+                    if msg.get("role"):
+                        msgs.append(msg)
+                except Exception:
+                    pass
+            text = _response_after_last_user(msgs)
+            if text:
+                return _trunc(text)
         except Exception:
             pass
 
