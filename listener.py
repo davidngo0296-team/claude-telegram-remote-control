@@ -190,9 +190,12 @@ def handle_callback(token: str, callback_query: dict) -> None:
         })
 
         cfg = load_config()
+        if chosen_id:
+            _telegram_sessions.add(chosen_id)
         threading.Thread(
             target=run_and_stream,
             args=(cfg["TELEGRAM_BOT_TOKEN"], chat_id, prompt, chosen_id),
+            kwargs={"on_session_id": _telegram_sessions.add},
             daemon=True,
         ).start()
 
@@ -233,6 +236,7 @@ def handle_text_message(token: str, chat_id: str, text: str) -> None:
         threading.Thread(
             target=run_and_stream,
             args=(token, chat_id, "Start a new conversation. Say hello and ask what I want to work on."),
+            kwargs={"on_session_id": _telegram_sessions.add},
             daemon=True,
         ).start()
         return
@@ -285,9 +289,11 @@ def handle_text_message(token: str, chat_id: str, text: str) -> None:
         s = sess_store.get(session_id)
         name = s["name"] if s else session_id[:8]
         send_message(token, chat_id, f"💬 *{name}*\n\n_{text[:80]}_")
+        _telegram_sessions.add(session_id)
         threading.Thread(
             target=run_and_stream,
             args=(token, chat_id, text, session_id),
+            kwargs={"on_session_id": _telegram_sessions.add},
             daemon=True,
         ).start()
         return
@@ -300,6 +306,7 @@ def handle_text_message(token: str, chat_id: str, text: str) -> None:
         threading.Thread(
             target=run_and_stream,
             args=(token, chat_id, text, None),
+            kwargs={"on_session_id": _telegram_sessions.add},
             daemon=True,
         ).start()
         return
@@ -468,6 +475,107 @@ def _show_sessions_list(token: str, chat_id: str) -> None:
     send_message(token, chat_id, "\n".join(lines))
 
 
+# ── Session auto-tailer ────────────────────────────────────────────────────
+
+# Sessions started via Telegram — already streamed by run_and_stream, skip tailing
+_telegram_sessions: set[str] = set()
+# Sessions currently being tailed by a background thread
+_tailed_sessions: set[str] = set()
+
+
+def _tail_one_session(token: str, chat_id: str, jsonl_path: str, session_id: str) -> None:
+    """Background thread: watch a JSONL file and forward new assistant messages."""
+    import sessions as _sess
+    s = _sess.get(session_id)
+    name = s["name"] if s else session_id[:8]
+
+    try:
+        with open(jsonl_path, encoding="utf-8", errors="replace") as f:
+            f.seek(0, 2)
+            pos = f.tell()
+
+        idle_seconds = 0
+        while True:
+            try:
+                size = os.path.getsize(jsonl_path)
+            except OSError:
+                break
+
+            if size > pos:
+                idle_seconds = 0
+                with open(jsonl_path, encoding="utf-8", errors="replace") as f:
+                    f.seek(pos)
+                    new_data = f.read()
+                pos = size
+
+                for line in new_data.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    msg = obj.get("message", obj)
+                    if msg.get("role") != "assistant":
+                        continue
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        parts = [
+                            b.get("text", "").strip()
+                            for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        ]
+                        text = "\n".join(p for p in parts if p)
+                    else:
+                        text = str(content).strip()
+                    if text:
+                        ts = time.strftime("%H:%M:%S")
+                        print(f"[{ts}] TAIL({session_id[:8]}) -> Telegram")
+                        send_message(token, chat_id, f"💬 *{name}*\n\n{text}")
+            else:
+                idle_seconds += 1
+                if idle_seconds > 120:  # stop watching after 2 min of inactivity
+                    break
+
+            time.sleep(1)
+    finally:
+        _tailed_sessions.discard(session_id)
+
+
+def _session_watcher(token: str, chat_id: str) -> None:
+    """Background thread: detect newly-active terminal sessions and tail them."""
+    import glob as _glob
+    while True:
+        try:
+            home = os.path.expanduser("~")
+            pattern = os.path.join(home, ".claude", "projects", "**", "*.jsonl")
+            now = time.time()
+            for path in _glob.glob(pattern, recursive=True):
+                sid = os.path.splitext(os.path.basename(path))[0]
+                if len(sid) != 36 or sid.count("-") != 4:
+                    continue
+                if sid in _telegram_sessions or sid in _tailed_sessions:
+                    continue
+                # Only pick up sessions modified in the last 10 seconds
+                try:
+                    if now - os.path.getmtime(path) > 10:
+                        continue
+                except OSError:
+                    continue
+                _tailed_sessions.add(sid)
+                threading.Thread(
+                    target=_tail_one_session,
+                    args=(token, chat_id, path, sid),
+                    daemon=True,
+                ).start()
+                ts = time.strftime("%H:%M:%S")
+                print(f"[{ts}] AUTO-TAIL — session {sid[:8]}")
+        except Exception:
+            pass
+        time.sleep(5)
+
+
 # ── Main polling loop ──────────────────────────────────────────────────────
 
 def _takeover_polling(token: str) -> int:
@@ -491,6 +599,7 @@ def _takeover_polling(token: str) -> int:
 
 def run(token: str, chat_id: str) -> None:
     offset = _takeover_polling(token)
+    threading.Thread(target=_session_watcher, args=(token, chat_id), daemon=True).start()
     print(f"[{time.strftime('%H:%M:%S')}] Claude Telegram bridge running. Press Ctrl+C to stop.")
     while True:
         try:

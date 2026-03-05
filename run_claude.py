@@ -129,7 +129,8 @@ def edit_message(token: str, chat_id: str, message_id: int, text: str) -> None:
 
 
 def run_and_stream(token: str, chat_id: str, prompt: str,
-                   session_id: str | None = None) -> None:
+                   session_id: str | None = None,
+                   on_session_id=None) -> None:
     """Run claude -p and stream the response to Telegram.
 
     Args:
@@ -220,6 +221,8 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
 
             elif etype == "result":
                 new_session_id = event.get("session_id")
+                if new_session_id and on_session_id:
+                    on_session_id(new_session_id)
 
             now = time.monotonic()
             if now - last_edit > EDIT_INTERVAL:
