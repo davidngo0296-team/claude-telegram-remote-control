@@ -228,6 +228,9 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                 new_session_id = event.get("session_id")
                 if new_session_id and on_session_id:
                     on_session_id(new_session_id)
+                # Without --verbose, text arrives here instead of assistant events
+                if not final_text:
+                    final_text = event.get("result", "") or ""
 
             now = time.monotonic()
             if now - last_edit > EDIT_INTERVAL:
