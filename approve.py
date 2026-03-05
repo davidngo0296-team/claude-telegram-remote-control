@@ -411,8 +411,11 @@ def main() -> None:
         session_id = hook.get("session_id", "default")
         cwd = hook.get("cwd", "")
 
-        sys.stderr.write(f"[approve] tool={tool_name} session={session_id} mode={read_mode(cfg)}\n")
-        sys.stderr.flush()
+        def _log(msg):
+            with open("/tmp/approve_debug.log", "a") as _f:
+                _f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+
+        _log(f"tool={tool_name} session={session_id} mode={read_mode(cfg)}")
 
         if should_use_telegram(cfg):
             # ── Away mode: Telegram approval ──────────────────────────────
@@ -420,11 +423,9 @@ def main() -> None:
             chat_id = cfg["TELEGRAM_CHAT_ID"]
 
             send_approval_request(token, chat_id, tool_name, tool_input, session_id, cwd)
-            sys.stderr.write(f"[approve] waiting for file: {approval_file(session_id)}\n")
-            sys.stderr.flush()
+            _log(f"waiting for file: {approval_file(session_id)}")
             decision = wait_for_decision(session_id)
-            sys.stderr.write(f"[approve] decision={decision}\n")
-            sys.stderr.flush()
+            _log(f"decision={decision}")
 
             if decision == "approve":
                 print(json.dumps({"behavior": "allow"}))
