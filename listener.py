@@ -473,15 +473,14 @@ def _show_sessions_list(token: str, chat_id: str) -> None:
 def _takeover_polling(token: str) -> int:
     """Force-kill any active getUpdates connection (e.g. from another machine).
 
-    Sets a dummy webhook (which immediately drops all active long-poll connections),
-    then deletes it and grabs the offset — all before the other client's 5s retry fires.
+    Sets a dummy webhook (drops all active long-poll connections on Telegram's side),
+    waits for the other client's connection to fully die, then grabs the offset.
     Returns the next offset to use.
     """
-    # Setting a webhook kills any active getUpdates connection on Telegram's side
     _api_post(token, "setWebhook", {"url": "https://example.com/noop"})
-    time.sleep(0.5)
+    time.sleep(3)  # wait for the other client's connection to fully drop
     _api_post(token, "deleteWebhook", {"drop_pending_updates": False})
-    # Now grab the connection immediately
+    time.sleep(0.5)
     try:
         result = api_get(token, "getUpdates", {"timeout": 0})
         updates = result.get("result", [])
@@ -516,8 +515,15 @@ def run(token: str, chat_id: str) -> None:
             print("\n[bridge] Stopped.")
             break
         except URLError as exc:
-            print(f"[{time.strftime('%H:%M:%S')}] Network error: {exc} — retrying in 5s")
-            time.sleep(5)
+            if "409" in str(exc):
+                print(f"[{time.strftime('%H:%M:%S')}] 409 Conflict — another client detected, taking over...")
+                try:
+                    offset = _takeover_polling(token)
+                except Exception:
+                    time.sleep(5)
+            else:
+                print(f"[{time.strftime('%H:%M:%S')}] Network error: {exc} — retrying in 5s")
+                time.sleep(5)
         except Exception as exc:
             print(f"[{time.strftime('%H:%M:%S')}] Error: {exc} — retrying in 5s")
             time.sleep(5)
