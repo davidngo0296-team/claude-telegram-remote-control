@@ -471,6 +471,7 @@ def _show_sessions_list(token: str, chat_id: str) -> None:
 # ── Main polling loop ──────────────────────────────────────────────────────
 
 def run(token: str, chat_id: str) -> None:
+    _api_post(token, "deleteWebhook", {})
     print(f"[{time.strftime('%H:%M:%S')}] Claude Telegram bridge running. Press Ctrl+C to stop.")
     offset = 0
     while True:
