@@ -456,7 +456,7 @@ def main() -> None:
         if tool_name in _SAFE_TOOLS:
             sys.exit(0)
 
-        if should_use_telegram(cfg) and listener_running():
+        if should_use_telegram(cfg):
             # ── Away mode: Telegram approval ──────────────────────────────
             token = cfg["TELEGRAM_BOT_TOKEN"]
             chat_id = cfg["TELEGRAM_CHAT_ID"]
@@ -485,7 +485,7 @@ def main() -> None:
             sys.exit(2)
 
         elif sys.platform != "win32":
-            # ── Terminal fallback (listener not running, Linux/macOS) ──────
+            # ── Terminal fallback (Linux/macOS, local mode) ────────────────
             decision, reason = terminal_prompt(tool_name, tool_input, cwd)
 
         else:
