@@ -18,6 +18,9 @@ import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sessions as sess_store
+
 
 def load_config() -> dict:
     path = Path(__file__).parent / "config.env"
@@ -103,7 +106,7 @@ def extract_assistant_text(line: str) -> str | None:
     return None
 
 
-def tail(token: str, chat_id: str, jsonl: Path) -> None:
+def tail(token: str, chat_id: str, jsonl: Path, session_name: str) -> None:
     print(f"[tail] Watching {jsonl}")
     print(f"[tail] Forwarding assistant messages to Telegram. Ctrl+C to stop.")
 
@@ -133,7 +136,7 @@ def tail(token: str, chat_id: str, jsonl: Path) -> None:
                 if text:
                     ts = time.strftime("%H:%M:%S")
                     print(f"[{ts}] -> Telegram ({len(text)} chars)")
-                    send_message(token, chat_id, text)
+                    send_message(token, chat_id, f"💬 *{session_name}*\n\n{text}")
 
         time.sleep(0.5)
 
@@ -152,9 +155,11 @@ if __name__ == "__main__":
         sys.exit(1)
 
     sid = os.path.splitext(jsonl.name)[0]
-    print(f"[tail] Session: {sid}")
+    s = sess_store.get(sid)
+    name = s["name"] if s else sid[:8]
+    print(f"[tail] Session: {sid} ({name})")
 
     try:
-        tail(token, chat_id, jsonl)
+        tail(token, chat_id, jsonl, name)
     except KeyboardInterrupt:
         print("\n[tail] Stopped.")
