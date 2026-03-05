@@ -472,8 +472,14 @@ def _show_sessions_list(token: str, chat_id: str) -> None:
 
 def run(token: str, chat_id: str) -> None:
     _api_post(token, "deleteWebhook", {})
+    # Flush any stale long-poll connection from a previous instance
+    try:
+        result = api_get(token, "getUpdates", {"timeout": 0})
+        updates = result.get("result", [])
+        offset = (updates[-1]["update_id"] + 1) if updates else 0
+    except Exception:
+        offset = 0
     print(f"[{time.strftime('%H:%M:%S')}] Claude Telegram bridge running. Press Ctrl+C to stop.")
-    offset = 0
     while True:
         try:
             result = api_get(token, "getUpdates", {"offset": offset, "timeout": 30})
