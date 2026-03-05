@@ -290,12 +290,14 @@ def handle_text_message(token: str, chat_id: str, text: str) -> None:
         name = s["name"] if s else session_id[:8]
         send_message(token, chat_id, f"💬 *{name}*\n\n_{text[:80]}_")
         _telegram_sessions.add(session_id)
-        threading.Thread(
-            target=run_and_stream,
-            args=(token, chat_id, text, session_id),
-            kwargs={"on_session_id": _telegram_sessions.add},
-            daemon=True,
-        ).start()
+
+        def _run_and_restore(sid):
+            run_and_stream(token, chat_id, text, sid,
+                           on_session_id=_telegram_sessions.add)
+            _telegram_sessions.discard(sid)
+
+        threading.Thread(target=_run_and_restore, args=(session_id,),
+                         daemon=True).start()
         return
 
     # ── Session picker ─────────────────────────────────────────────────────
@@ -492,7 +494,9 @@ def _tail_one_session(token: str, chat_id: str, jsonl_path: str, session_id: str
     try:
         with open(jsonl_path, encoding="utf-8", errors="replace") as f:
             f.seek(0, 2)
-            pos = f.tell()
+            end = f.tell()
+            # Seek back up to 8 KB to catch the user message that triggered detection
+            pos = max(0, end - 8192)
 
         idle_seconds = 0
         while True:
@@ -516,8 +520,12 @@ def _tail_one_session(token: str, chat_id: str, jsonl_path: str, session_id: str
                         obj = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    # Support both old format {message: {role, content}} and
+                    # new format {type: "user"/"assistant", message: {content}}
+                    role = obj.get("type") or obj.get("message", {}).get("role")
+                    if role not in ("user", "assistant"):
+                        continue
                     msg = obj.get("message", obj)
-                    role = msg.get("role")
                     content = msg.get("content", "")
 
                     # Extract plain text, skipping tool results and tool use blocks
@@ -537,12 +545,33 @@ def _tail_one_session(token: str, chat_id: str, jsonl_path: str, session_id: str
                         continue
 
                     ts = time.strftime("%H:%M:%S")
-                    if role == "user":
-                        print(f"[{ts}] TAIL({session_id[:8]}) user -> Telegram")
-                        send_message(token, chat_id, f"👤 *You* \\({name}\\)\n\n{text}")
-                    elif role == "assistant":
-                        print(f"[{ts}] TAIL({session_id[:8]}) asst -> Telegram")
-                        send_message(token, chat_id, f"💬 *{name}*\n\n{text}")
+                    try:
+                        if role == "user":
+                            print(f"[{ts}] TAIL({session_id[:8]}) user -> Telegram")
+                            send_message(token, chat_id, f"👤 *You* \\({name}\\)\n\n{text}")
+                        elif role == "assistant":
+                            print(f"[{ts}] TAIL({session_id[:8]}) asst -> Telegram")
+                            send_message(token, chat_id, f"💬 *{name}*\n\n{text}")
+                            # Continue button after each assistant turn
+                            try:
+                                _api_post(token, "sendMessage", {
+                                    "chat_id": chat_id,
+                                    "text": f"✓ _{name}_ · {time.strftime('%H:%M')}",
+                                    "parse_mode": "Markdown",
+                                    "reply_markup": {"inline_keyboard": [[
+                                        {"text": "↩️ Continue", "callback_data": f"continue:{session_id}"},
+                                    ]]},
+                                })
+                            except Exception:
+                                _api_post(token, "sendMessage", {
+                                    "chat_id": chat_id,
+                                    "text": f"✓ {name} · {time.strftime('%H:%M')}",
+                                    "reply_markup": {"inline_keyboard": [[
+                                        {"text": "↩️ Continue", "callback_data": f"continue:{session_id}"},
+                                    ]]},
+                                })
+                    except Exception as e:
+                        print(f"[{ts}] TAIL({session_id[:8]}) send error: {e}")
             else:
                 idle_seconds += 1
                 if idle_seconds > 120:  # stop watching after 2 min of inactivity
@@ -558,18 +587,23 @@ def _session_watcher(token: str, chat_id: str) -> None:
     import glob as _glob
     while True:
         try:
-            home = os.path.expanduser("~")
-            pattern = os.path.join(home, ".claude", "projects", "**", "*.jsonl")
+            patterns = [
+                os.path.join(os.path.expanduser("~"), ".claude", "projects", "**", "*.jsonl"),
+                "/home/claudeop/.claude/projects/**/*.jsonl",
+            ]
             now = time.time()
-            for path in _glob.glob(pattern, recursive=True):
+            all_paths = []
+            for pat in patterns:
+                all_paths.extend(_glob.glob(pat, recursive=True))
+            for path in all_paths:
                 sid = os.path.splitext(os.path.basename(path))[0]
                 if len(sid) != 36 or sid.count("-") != 4:
                     continue
                 if sid in _telegram_sessions or sid in _tailed_sessions:
                     continue
-                # Only pick up sessions modified in the last 10 seconds
+                # Only pick up sessions modified in the last 60 seconds
                 try:
-                    if now - os.path.getmtime(path) > 10:
+                    if now - os.path.getmtime(path) > 60:
                         continue
                 except OSError:
                     continue

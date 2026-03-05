@@ -456,7 +456,11 @@ def main() -> None:
         if tool_name in _SAFE_TOOLS:
             sys.exit(0)
 
-        if should_use_telegram(cfg):
+        _use_tg = should_use_telegram(cfg)
+        with open("/tmp/approve_debug.log", "a") as _f:
+            _f.write(f"[{time.strftime('%H:%M:%S')}] tool={tool_name} tg_initiated={bool(os.environ.get('CLAUDE_TELEGRAM_INITIATED'))} use_tg={_use_tg} mode={read_mode(cfg)}\n")
+
+        if _use_tg:
             # ── Away mode: Telegram approval ──────────────────────────────
             token = cfg["TELEGRAM_BOT_TOKEN"]
             chat_id = cfg["TELEGRAM_CHAT_ID"]
@@ -487,19 +491,22 @@ def main() -> None:
         elif sys.platform != "win32":
             # ── Terminal fallback (Linux/macOS, local mode) ────────────────
             decision, reason = terminal_prompt(tool_name, tool_input, cwd)
+            if decision == "allow":
+                sys.exit(0)
+            print(json.dumps({"decision": "block", "reason": reason or "Denied via terminal."}))
+            sys.exit(2)
 
         else:
             # ── At desk mode: desktop popup (Windows) ─────────────────────
             decision, reason = show_desktop_popup(tool_name, tool_input, cwd)
 
             if decision == "allow":
-                print(json.dumps({"behavior": "allow"}))
                 sys.exit(0)
 
             if decision == "allow_always":
                 rule = build_allow_rule(tool_name, tool_input)
                 write_allow_rule(cwd, rule)
-                    sys.exit(0)
+                sys.exit(0)
 
             print(json.dumps({"decision": "block", "reason": reason}))
             sys.exit(2)

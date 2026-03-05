@@ -108,11 +108,18 @@ def _api_post(token: str, method: str, payload: dict) -> dict:
 
 
 def send_message(token: str, chat_id: str, text: str) -> int:
-    result = _api_post(token, "sendMessage", {
-        "chat_id": chat_id,
-        "text": text or "…",
-        "parse_mode": "Markdown",
-    })
+    try:
+        result = _api_post(token, "sendMessage", {
+            "chat_id": chat_id,
+            "text": text or "…",
+            "parse_mode": "Markdown",
+        })
+    except Exception:
+        # Retry without Markdown if parse error (e.g. unbalanced backticks)
+        result = _api_post(token, "sendMessage", {
+            "chat_id": chat_id,
+            "text": text or "…",
+        })
     return result["result"]["message_id"]
 
 
@@ -147,8 +154,20 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
     if session_id:
         cmd += ["--resume", session_id]
 
-    _log(f"cmd={' '.join(cmd)}")
+    # If resuming a session, find which user's home it lives in
+    home_dir = None
+    if session_id:
+        import glob as _glob
+        for candidate in _glob.glob(
+            f"/home/*/.claude/projects/**/{session_id}.jsonl", recursive=True
+        ):
+            home_dir = str(Path(candidate).parents[3])  # /home/<user>
+            break
+
+    _log(f"cmd={' '.join(cmd)} home_dir={home_dir}")
     env = {**os.environ, TELEGRAM_ENV_MARKER: "1"}
+    if home_dir:
+        env["HOME"] = home_dir
 
     # On Windows, Claude is installed as claude.cmd which requires shell=True
     use_shell = sys.platform == "win32"
@@ -286,6 +305,38 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                      f"_(Done — {len(tool_calls)} tool call(s))_")
     else:
         edit_message(token, chat_id, message_id, "_(No response received)_")
+
+    # Send a ✓ done notification with a Continue button
+    _log(f"done_notify: resolved_id={resolved_id}")
+    if resolved_id:
+        s = sess_store.get(resolved_id)
+        name = s["name"] if s else resolved_id[:8]
+        ts = time.strftime("%H:%M")
+        tool_note = f" · {len(tool_calls)} tool(s)" if tool_calls else ""
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": "↩️ Continue", "callback_data": f"continue:{resolved_id}"},
+            ]]
+        }
+        try:
+            _api_post(token, "sendMessage", {
+                "chat_id": chat_id,
+                "text": f"✓ _{name}_ · {ts}{tool_note}",
+                "parse_mode": "Markdown",
+                "reply_markup": reply_markup,
+            })
+            _log("done_notify: sent ok")
+        except Exception as e:
+            _log(f"done_notify: markdown failed ({e}), retrying plain")
+            try:
+                _api_post(token, "sendMessage", {
+                    "chat_id": chat_id,
+                    "text": f"✓ {name} · {ts}{tool_note}",
+                    "reply_markup": reply_markup,
+                })
+                _log("done_notify: plain sent ok")
+            except Exception as e2:
+                _log(f"done_notify: plain also failed ({e2})")
 
 
 def _tail(text: str) -> str:
