@@ -162,7 +162,7 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
         proc = subprocess.Popen(
             popen_cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.DEVNULL,
             env=env,
             text=True,
             encoding="utf-8",
@@ -178,11 +178,9 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
-                print(f"[DBG non-json] {line[:120]}", file=sys.stderr)
                 continue
 
             etype = event.get("type", "")
-            print(f"[DBG event] {etype} | text_so_far={len(final_text)}", file=sys.stderr)
 
             if etype == "assistant":
                 for block in event.get("message", {}).get("content", []):
