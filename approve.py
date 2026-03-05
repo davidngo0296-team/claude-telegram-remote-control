@@ -448,6 +448,10 @@ def main() -> None:
         session_id = hook.get("session_id", "default")
         cwd = hook.get("cwd", "")
 
+        # Auto-approve everything inside Telegram-initiated sessions
+        if os.environ.get("CLAUDE_TELEGRAM_INITIATED"):
+            sys.exit(0)
+
         # Auto-approve read-only/safe tools immediately
         if tool_name in _SAFE_TOOLS:
             sys.exit(0)
