@@ -366,11 +366,11 @@ def _first_user_message(jsonl_path: str) -> str:
                 if isinstance(content, list):
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "text":
-                            t = block.get("text", "").strip()
+                            t = block.get("text", "").strip().replace("\n", " ")
                             if t:
                                 return t[:50]
                 elif isinstance(content, str) and content.strip():
-                    return content.strip()[:50]
+                    return content.strip().replace("\n", " ")[:50]
     except Exception:
         pass
     return ""
