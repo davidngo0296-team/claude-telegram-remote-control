@@ -177,7 +177,14 @@ def show_desktop_popup(tool_name: str, tool_input: dict, cwd: str = "") -> tuple
 
 
 def get_idle_seconds() -> float:
-    """Return seconds since the last keyboard/mouse input on Windows."""
+    """Return seconds since the last keyboard/mouse input.
+
+    Windows: uses GetLastInputInfo via ctypes.
+    Linux/macOS: no reliable cross-platform idle API; return a large value
+    so that 'auto' mode always routes to Telegram on servers.
+    """
+    if sys.platform != "win32":
+        return float("inf")
     class LASTINPUTINFO(ctypes.Structure):
         _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_ulong)]
     lii = LASTINPUTINFO()
