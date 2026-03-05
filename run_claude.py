@@ -186,11 +186,7 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                     if not isinstance(block, dict):
                         continue
                     btype = block.get("type")
-                    if btype == "thinking":
-                        pass  # explicitly skip thinking blocks
-                    elif btype == "text":
-                        final_text += block.get("text", "")
-                    elif btype == "tool_use":
+                    if btype == "tool_use":
                         tool_id = block.get("id", "")
                         name = block.get("name", "")
                         snippet = _format_input_snippet(name, block.get("input", {}))
@@ -219,9 +215,7 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                             tool_calls[idx]["done"] = True
 
             elif etype == "text":
-                # Streaming text delta — present in some SDK output modes.
-                # With --verbose stream-json, text arrives via assistant events above;
-                # this branch handles other modes without duplication in practice.
+                # Streaming text delta — arrives incrementally as Claude generates.
                 final_text += event.get("text", "")
 
             elif etype == "result":
