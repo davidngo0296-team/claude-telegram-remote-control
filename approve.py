@@ -420,11 +420,13 @@ def main() -> None:
             decision = wait_for_decision(session_id)
 
             if decision == "approve":
+                print(json.dumps({"behavior": "allow"}))
                 sys.exit(0)
 
             if decision == "allow_always":
                 rule = build_allow_rule(tool_name, tool_input)
                 write_allow_rule(cwd, rule)
+                print(json.dumps({"behavior": "allow"}))
                 sys.exit(0)
 
             if decision.startswith("deny:"):
@@ -436,23 +438,25 @@ def main() -> None:
             else:
                 reason = "Denied via Telegram."
 
-            print(json.dumps({"decision": "block", "reason": reason}))
-            sys.exit(2)
+            print(json.dumps({"behavior": "deny", "message": reason}))
+            sys.exit(0)
 
         else:
             # ── At desk mode: desktop popup ────────────────────────────────
             decision, reason = show_desktop_popup(tool_name, tool_input, cwd)
 
             if decision == "allow":
+                print(json.dumps({"behavior": "allow"}))
                 sys.exit(0)
 
             if decision == "allow_always":
                 rule = build_allow_rule(tool_name, tool_input)
                 write_allow_rule(cwd, rule)
+                print(json.dumps({"behavior": "allow"}))
                 sys.exit(0)
 
-            print(json.dumps({"decision": "block", "reason": reason}))
-            sys.exit(2)
+            print(json.dumps({"behavior": "deny", "message": reason}))
+            sys.exit(0)
 
     except Exception as exc:
         sys.stderr.write(f"[telegram/approve] {exc}\n")
