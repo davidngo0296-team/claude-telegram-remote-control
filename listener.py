@@ -478,7 +478,7 @@ def _takeover_polling(token: str) -> int:
     Returns the next offset to use.
     """
     # Setting a webhook kills any active getUpdates connection on Telegram's side
-    _api_post(token, "setWebhook", {"url": "https://0.0.0.0"})
+    _api_post(token, "setWebhook", {"url": "https://example.com/noop"})
     time.sleep(0.5)
     _api_post(token, "deleteWebhook", {"drop_pending_updates": False})
     # Now grab the connection immediately
