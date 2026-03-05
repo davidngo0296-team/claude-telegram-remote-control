@@ -26,6 +26,7 @@ from urllib.request import Request, urlopen
 TIMEOUT_SECONDS = 36000  # 10 hours
 MODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mode.txt")
 SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram_sessions.json")
+HEARTBEAT_FILE = os.path.join(tempfile.gettempdir(), "claude_listener_alive.pid")
 
 
 def get_session_name(session_id: str) -> str:
@@ -401,6 +402,38 @@ def wait_for_decision(session_id: str) -> str:
     return "timeout"
 
 
+def listener_running() -> bool:
+    """Return True if the listener process is alive."""
+    try:
+        pid = int(open(HEARTBEAT_FILE).read().strip())
+        os.kill(pid, 0)  # signal 0 = just check existence
+        return True
+    except Exception:
+        return False
+
+
+def terminal_prompt(tool_name: str, tool_input: dict, cwd: str) -> tuple:
+    """Prompt for approval directly on the terminal via /dev/tty.
+
+    Returns (decision, reason): decision is 'allow' or 'deny'.
+    """
+    content = plain_content(tool_name, tool_input)
+    try:
+        with open("/dev/tty", "r+") as tty:
+            tty.write(f"\n🔧 Permission Request — {tool_name}\n")
+            if cwd:
+                tty.write(f"   Dir: {cwd}\n")
+            tty.write(f"{content[:400]}\n")
+            tty.write("Allow? [y/N] ")
+            tty.flush()
+            answer = tty.readline().strip().lower()
+        if answer in ("y", "yes"):
+            return "allow", ""
+        return "deny", "Denied via terminal."
+    except Exception:
+        return "allow", ""  # no tty available, fail open
+
+
 # Tools that are always safe — auto-approve without asking
 _SAFE_TOOLS = {"Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "TodoRead", "TodoWrite"}
 
@@ -419,7 +452,7 @@ def main() -> None:
         if tool_name in _SAFE_TOOLS:
             sys.exit(0)
 
-        if should_use_telegram(cfg):
+        if should_use_telegram(cfg) and listener_running():
             # ── Away mode: Telegram approval ──────────────────────────────
             token = cfg["TELEGRAM_BOT_TOKEN"]
             chat_id = cfg["TELEGRAM_CHAT_ID"]
@@ -447,8 +480,12 @@ def main() -> None:
             print(json.dumps({"decision": "block", "reason": reason}))
             sys.exit(2)
 
+        elif sys.platform != "win32":
+            # ── Terminal fallback (listener not running, Linux/macOS) ──────
+            decision, reason = terminal_prompt(tool_name, tool_input, cwd)
+
         else:
-            # ── At desk mode: desktop popup ────────────────────────────────
+            # ── At desk mode: desktop popup (Windows) ─────────────────────
             decision, reason = show_desktop_popup(tool_name, tool_input, cwd)
 
             if decision == "allow":

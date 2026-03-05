@@ -597,7 +597,16 @@ def _takeover_polling(token: str) -> int:
         return 0
 
 
+_HEARTBEAT_FILE = os.path.join(tempfile.gettempdir(), "claude_listener_alive.pid")
+
+
 def run(token: str, chat_id: str) -> None:
+    # Write PID so approve.py knows the listener is alive
+    with open(_HEARTBEAT_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    import atexit
+    atexit.register(lambda: os.path.exists(_HEARTBEAT_FILE) and os.remove(_HEARTBEAT_FILE))
+
     offset = _takeover_polling(token)
     threading.Thread(target=_session_watcher, args=(token, chat_id), daemon=True).start()
     print(f"[{time.strftime('%H:%M:%S')}] Claude Telegram bridge running. Press Ctrl+C to stop.")
