@@ -139,10 +139,15 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
         prompt: The user's message to send to Claude.
         session_id: If provided, resume this session. If None, start a new one.
     """
+    def _log(msg):
+        with open("/tmp/run_claude_debug.log", "a") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+
     cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
     if session_id:
         cmd += ["--resume", session_id]
 
+    _log(f"cmd={' '.join(cmd)}")
     env = {**os.environ, TELEGRAM_ENV_MARKER: "1"}
 
     # On Windows, Claude is installed as claude.cmd which requires shell=True
@@ -181,6 +186,7 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                 continue
 
             etype = event.get("type", "")
+            _log(f"event={etype} text={len(final_text)}")
 
             if etype == "assistant":
                 for block in event.get("message", {}).get("content", []):
@@ -240,10 +246,12 @@ def run_and_stream(token: str, chat_id: str, prompt: str,
                 last_edit = now
 
     except Exception as exc:
+        _log(f"exception={exc}")
         final_text = final_text or f"_(Error: {exc})_"
     finally:
         if proc is not None:
             proc.wait()
+    _log(f"final_text={repr(final_text[:80])}")
 
     # Save / update session with a human-readable name
     resolved_id = new_session_id or session_id
