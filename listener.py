@@ -470,15 +470,28 @@ def _show_sessions_list(token: str, chat_id: str) -> None:
 
 # ── Main polling loop ──────────────────────────────────────────────────────
 
-def run(token: str, chat_id: str) -> None:
-    _api_post(token, "deleteWebhook", {})
-    # Flush any stale long-poll connection from a previous instance
+def _takeover_polling(token: str) -> int:
+    """Force-kill any active getUpdates connection (e.g. from another machine).
+
+    Sets a dummy webhook (which immediately drops all active long-poll connections),
+    then deletes it and grabs the offset — all before the other client's 5s retry fires.
+    Returns the next offset to use.
+    """
+    # Setting a webhook kills any active getUpdates connection on Telegram's side
+    _api_post(token, "setWebhook", {"url": "https://0.0.0.0"})
+    time.sleep(0.5)
+    _api_post(token, "deleteWebhook", {"drop_pending_updates": False})
+    # Now grab the connection immediately
     try:
         result = api_get(token, "getUpdates", {"timeout": 0})
         updates = result.get("result", [])
-        offset = (updates[-1]["update_id"] + 1) if updates else 0
+        return (updates[-1]["update_id"] + 1) if updates else 0
     except Exception:
-        offset = 0
+        return 0
+
+
+def run(token: str, chat_id: str) -> None:
+    offset = _takeover_polling(token)
     print(f"[{time.strftime('%H:%M:%S')}] Claude Telegram bridge running. Press Ctrl+C to stop.")
     while True:
         try:
