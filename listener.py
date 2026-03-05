@@ -517,9 +517,10 @@ def _tail_one_session(token: str, chat_id: str, jsonl_path: str, session_id: str
                     except json.JSONDecodeError:
                         continue
                     msg = obj.get("message", obj)
-                    if msg.get("role") != "assistant":
-                        continue
+                    role = msg.get("role")
                     content = msg.get("content", "")
+
+                    # Extract plain text, skipping tool results and tool use blocks
                     if isinstance(content, list):
                         parts = [
                             b.get("text", "").strip()
@@ -527,11 +528,20 @@ def _tail_one_session(token: str, chat_id: str, jsonl_path: str, session_id: str
                             if isinstance(b, dict) and b.get("type") == "text"
                         ]
                         text = "\n".join(p for p in parts if p)
+                    elif isinstance(content, str):
+                        text = content.strip()
                     else:
-                        text = str(content).strip()
-                    if text:
-                        ts = time.strftime("%H:%M:%S")
-                        print(f"[{ts}] TAIL({session_id[:8]}) -> Telegram")
+                        continue
+
+                    if not text:
+                        continue
+
+                    ts = time.strftime("%H:%M:%S")
+                    if role == "user":
+                        print(f"[{ts}] TAIL({session_id[:8]}) user -> Telegram")
+                        send_message(token, chat_id, f"👤 *You* \\({name}\\)\n\n{text}")
+                    elif role == "assistant":
+                        print(f"[{ts}] TAIL({session_id[:8]}) asst -> Telegram")
                         send_message(token, chat_id, f"💬 *{name}*\n\n{text}")
             else:
                 idle_seconds += 1
